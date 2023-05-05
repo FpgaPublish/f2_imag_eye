@@ -85,7 +85,7 @@ localparam WD_CYC_SCL = LOG2_N(NB_CYC_SCL); //cycle width
 localparam NB_ONCE_BIT = WD_BYTE + 1; //once byte include bit
 localparam NB_DEVICE_WR = {4'b1010,MD_ADR_AAA,1'b0};
 localparam NB_DEVICE_RD = {4'b1010,MD_ADR_AAA,1'b1};
-
+localparam NB_WRITE_CYCLE = 5_000_00; //5ms write idle
 //========================================================
 //register and wire to time sequence and combine
 // shake data to write
@@ -115,7 +115,8 @@ reg  [WD_SHK_ADR-1:0]  r_shk_iic_saddr;
 reg  [WD_SHK_DAT-1:0]  r_shk_iic_sdata;
 reg                    r_shk_iic_ssync;
 reg                    r_shk_iic_ssync_d1;
-
+//write cycle type
+reg  [LOG2_N(NB_WRITE_CYCLE)-1:0] r_wait_dly_cnt;
 //========================================================
 //always and assign to drive logic and connect
 /* @begin state machine */
@@ -128,7 +129,8 @@ localparam PAGE_WRITE   = 3;
 localparam CADDR_READ   = 4;
 localparam SEQNT_READ   = 6;
 localparam OVERS_FLAG   = 9;
-localparam OVER         = 7;      
+localparam OVER         = 7;   
+localparam WAIT         = 10;   
 //state variable
 reg [3:0] cstate = IDLE;
 
@@ -218,10 +220,18 @@ always @(posedge i_sys_clk)
                 begin
                     if(r_read_fifo_cnt == (r_shk_iic_saddr - 1'b1))
                     begin
-                        cstate <= IDLE;
+                        cstate <= WAIT;
                     end
                 end
             else 
+                begin
+                    if(1)
+                    begin
+                        cstate <= WAIT;
+                    end
+                end
+            WAIT: if(r_wait_dly_cnt == NB_WRITE_CYCLE - 1'b1
+                ||  MD_SIM_ABLE)
                 begin
                     if(1)
                     begin
@@ -373,12 +383,13 @@ begin
     begin
         r_port_iic_scl <= 1'b1;
     end
-    else if(cstate == START_FLAG || cstate == OVERS_FLAG)
+    else if(cstate == START_FLAG)
     begin
         r_port_iic_scl <= 1'b1;
     end
     else if(cstate == BYTE_WRITE || cstate == PAGE_WRITE
-        ||  cstate == CADDR_READ || cstate == SEQNT_READ)
+        ||  cstate == CADDR_READ || cstate == SEQNT_READ
+        ||  cstate == OVERS_FLAG)
     begin
         if(r_stm_time_cnt == 1'b0)
         begin
@@ -410,12 +421,12 @@ begin
     end
     else if(cstate == OVERS_FLAG)
     begin
-        if(r_stm_time_cnt == 0)
+        if(r_stm_time_cnt == NB_CYC_SCL / 4 - 1)
         begin
             r_port_iic_sda_o <= 1'b0;
             r_port_iic_sda_t <= 1'b0;
         end
-        else if(r_stm_time_cnt == NB_CYC_SCL / 2 - 1)
+        else if(r_stm_time_cnt == NB_CYC_SCL * 3 / 4 - 1)
         begin
             r_port_iic_sda_o <= 1'b1;
             r_port_iic_sda_t <= 1'b0;
@@ -587,7 +598,7 @@ begin
     begin
         r_page_data_rd <= 1'b0;
     end
-    else if(cstate == SEQNT_READ)
+    else if(cstate == SEQNT_READ || cstate == CADDR_READ)
     begin
         if(r_stm_time_cnt == NB_CYC_SCL * 3 / 4 - 1)
         begin
@@ -608,14 +619,27 @@ begin
     begin
         for(j = 0; j < NB_BYTE_WR; j = j + 1)
         begin:FOR2_NB_BYTE_WR
-            r_iic_read_data_fifo[i] <= 1'b0;
+            r_iic_read_data_fifo[j] <= 1'b0;
+        end
+    end
+    else if(cstate === CADDR_READ)
+    begin
+        if(r_stm_time_cnt == NB_CYC_SCL * 3 / 4 - 1)
+        begin
+            if(r_stm_byte_cnt == 1)
+            begin
+                if(r_stm_bits_cnt == WD_BYTE)
+                begin
+                    r_iic_read_data_fifo[0] <= r_page_data_rd;
+                end
+            end
         end
     end
     else if(cstate == SEQNT_READ)
     begin
         if(r_stm_time_cnt == NB_CYC_SCL * 3 / 4 - 1)
         begin
-            if(r_stm_byte_cnt >= 1 && r_stm_byte_cnt <= r_data_fifo_cnt)
+            if(r_stm_byte_cnt >= 1 && r_stm_byte_cnt <= r_data_fifo_cnt + 1)
             begin
                 if(r_stm_bits_cnt == WD_BYTE)
                 begin
@@ -705,6 +729,18 @@ assign s_shk_iic_ready = r_shk_iic_ready;
 assign s_shk_iic_saddr = r_shk_iic_saddr;
 assign s_shk_iic_sdata = r_shk_iic_sdata;
 assign s_shk_iic_ssync = r_shk_iic_ssync_d1;
+//write over and wait idle
+always@(posedge i_sys_clk)
+begin
+    if(cstate == IDLE) //state IDLE reset
+    begin
+        r_wait_dly_cnt <= 1'b0;
+    end
+    else if(cstate == WAIT)
+    begin
+        r_wait_dly_cnt <= r_wait_dly_cnt + 1'b1;
+    end
+end
 //========================================================
 //module and task to build part of system
 
